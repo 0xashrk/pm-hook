@@ -1,0 +1,8 @@
+.env
+.venv/
+out/
+*.pid
+__pycache__/
+*.pyc
+*.log
+watch.sock
