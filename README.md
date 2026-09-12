@@ -2,12 +2,13 @@
 
 Polymarket CLOB market WebSocket → webhook price hooks.
 
-Two watchers:
+Three watchers:
 
 | Script | What it watches |
 |--------|-----------------|
 | `watch_monthly.py` | Monthly crypto ladder (LFT) events — multi-rung Yes tokens |
 | `watch_crypto_5m.py` | BTC / ETH / SOL / XRP 5-minute up/down windows |
+| `watch_soccer.py` | EPL / La Liga / MLS match moneylines (3-way Yes) |
 
 Both connect to `wss://ws-subscriptions-clob.polymarket.com/ws/market`, send `PING` ~every 10s, force reconnect when market traffic goes stale (`STALE_SECS`), append alerts to `out/price-hook-queue.jsonl`, and **immediately** `POST` JSON to `WEBHOOK_URL` with `Authorization: Bearer <WEBHOOK_KEY>`.
 
@@ -31,6 +32,8 @@ Dry-run (queue only, no webhook):
 .venv/bin/python watch_monthly.py
 # or
 .venv/bin/python watch_crypto_5m.py
+# or soccer
+.venv/bin/python watch_soccer.py
 ```
 
 Keep alive (requires `.env`):
@@ -41,6 +44,9 @@ Keep alive (requires `.env`):
 
 # 5m instead
 WATCH_SCRIPT=watch_crypto_5m.py ./scripts/supervise.sh
+
+# soccer (EPL + La Liga + MLS)
+WATCH_SCRIPT=watch_soccer.py ./scripts/supervise.sh
 ```
 
 Do **not** commit `.env`. Copy `.env.example` only.
@@ -56,8 +62,15 @@ Do **not** commit `.env`. Copy `.env.example` only.
 | `MAX_SPREAD` | `0.05` | Monthly: prefer / require `best_ask − best_bid` ≤ this for subscribe |
 | `REFRESH_SECS` | `90` | Monthly: Gamma re-resolve interval (use 60–120) |
 | `WATCH_SCRIPT` | `watch_monthly.py` | For `scripts/supervise.sh` only |
+| `LEAGUES` | `epl,lal,mls` | Soccer: which leagues to resolve |
+| `HORIZON_HOURS` | `48` | Soccer: upcoming kickoffs to include |
+| `MATCH_DURATION_HOURS` | `3` | Soccer: live window after kickoff (Gamma `endDate` ≈ KO) |
+| `DELTA_ALERT_CENTS` | `0` | Soccer: alert when mark moves ≥ N¢ (0 = off) |
+| `POSITION_SLUGS` | _(empty)_ | Soccer: comma event/market slugs always watched |
+| `WATCH_MARKET_IDS` | _(empty)_ | Soccer: comma Gamma market ids always watched |
+| `MIN_YES` / `MAX_YES` | `0.02` / `0.98` | Soccer: skip extreme Yes for non-position markets |
 
-## Monthly vs 5m
+## Monthly vs 5m vs soccer
 
 ### `watch_crypto_5m.py`
 
@@ -84,6 +97,33 @@ Do **not** commit `.env`. Copy `.env.example` only.
 
 Re-resolves every `REFRESH_SECS` (default 90). Dedupe key: `market:<market_id>:Yes` (persisted in `out/alerted_monthly.json`).
 
+
+### `watch_soccer.py`
+
+**Resolve**
+
+1. Gamma `GET /events?series_id={10188|10193|10189}&active=true&closed=false` (EPL / La Liga / MLS — series ids from `GET /sports`).
+2. Keep **matchday** slugs only: `epl|lal|mls-<home>-<away>-YYYY-MM-DD` (drops futures / awards).
+3. Keep kickoffs inside `HORIZON_HOURS`, plus in-play through `MATCH_DURATION_HOURS` after KO.
+4. For each event, subscribe to **Yes** CLOB tokens for all `sportsMarketType=moneyline` legs (home / draw / away).
+
+**Alerts**
+
+- Fire when Yes ≥ `THRESHOLD` (deduped per market).
+- Optional `DELTA_ALERT_CENTS` for mark moves (useful for open positions).
+- `POSITION_SLUGS` / `WATCH_MARKET_IDS` force-watch those markets even outside the extreme-price skip band.
+
+Payload `type`: `soccer_moneyline_price_hook` (includes `league`, `event_slug`, `market_slug`, Gina `url`).
+
+Match Edge example:
+
+```bash
+POSITION_SLUGS=epl-sun-ars-2026-09-12
+DELTA_ALERT_CENTS=3
+THRESHOLD=0.90
+WATCH_SCRIPT=watch_soccer.py ./scripts/supervise.sh
+```
+
 ## Outputs
 
 ```
@@ -91,8 +131,11 @@ out/
   price-hook-queue.jsonl   # every alert payload
   alerted_5m.json          # 5m dedupe set
   alerted_monthly.json     # monthly dedupe set
+  alerted_soccer.json      # soccer threshold dedupe
+  last_mark_soccer.json    # soccer delta baseline
   watch_monthly.log        # when supervised
   watch_crypto_5m.log
+  watch_soccer.log
   supervise.log
 ```
 
